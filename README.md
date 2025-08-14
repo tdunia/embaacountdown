@@ -8,7 +8,7 @@ This app reads the bundled **class_schedule.csv** (no upload required) and shows
 - ⏳ Live countdown (days/hours/minutes/seconds) to end of the last class day
 
 ## Files
-- `app.py` — Streamlit application
+- `emba_countdown_dashboard.py` — Streamlit application
 - `class_schedule.csv` — Static class schedule
 - `requirements.txt` — Python dependencies
 
