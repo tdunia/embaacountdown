@@ -2,10 +2,14 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("America/Toronto")
+
+# Exclusion window (onsite) for weekends metric only
+EXCLUDE_START = pd.Timestamp("2025-10-31").tz_localize(TZ)
+EXCLUDE_END   = pd.Timestamp("2025-11-09").tz_localize(TZ)
 
 st.set_page_config(page_title="EMBA CA26 Countdown Dashboard", layout="centered")
 st.title("🎓 EMBA CA26 Countdown Dashboard")
@@ -14,43 +18,72 @@ st.title("🎓 EMBA CA26 Countdown Dashboard")
 def load_schedule():
     df = pd.read_csv("class_schedule.csv")
     df.columns = ["Date", "Course Info (AM)", "Course Info (PM)"]
-    # Parse date as local midnight
+    # Parse date and localize to TZ
     df["Full Date"] = pd.to_datetime(df["Date"], format="%Y-%m-%d", errors="coerce").dt.tz_localize(TZ)
     df = df.dropna(subset=["Full Date"])
     return df
 
+def normalize_name(name: str):
+    if pd.isna(name):
+        return None
+    s = str(name).strip().lower()
+    return re.sub(r"\s+", " ", s)
+
 def extract_base_course(name: str):
     if pd.isna(name): 
         return None
-    s = name.lower().strip()
-    # split at first number or dash/colon
-    s = re.split(r"\s+\d+|[-–:]", s)[0]
-    return s.strip()
+    s = str(name).lower().strip()
+    s = re.split(r"\s+\d+|[-–:]", s)[0]   # base course before numbers or dash/colon
+    return re.sub(r"\s+", " ", s).strip()
 
 df = load_schedule()
-
 now = datetime.now(TZ)
 
-# Last class date (assume countdown to END of that day, 23:59:59 local)
-last_class_day = df["Full Date"].max()
+# Determine last class day from "Strategies for Sustainability 3" if present
+mask_sus3 = df["Course Info (AM)"].str.contains("Strategies for Sustainability 3", case=False, na=False) | \
+            df["Course Info (PM)"].str.contains("Strategies for Sustainability 3", case=False, na=False)
+
+if mask_sus3.any():
+    last_class_day = df.loc[mask_sus3, "Full Date"].max()
+else:
+    last_class_day = df["Full Date"].max()
+
+# Countdown targets end of that day (adjust time here if needed)
 last_class_end = last_class_day.replace(hour=23, minute=59, second=59, microsecond=0)
 
-# === Metrics ===
-# 1) Classes left UNTIL END OF THIS YEAR
+# Upcoming rows from "now"
+upcoming = df[df["Full Date"] >= now].copy()
+
+# 1) Classes Left (unique names per day; duplicates at different times count once)
+def classes_left_unique_names(frame: pd.DataFrame) -> int:
+    total = 0
+    for d, g in frame.groupby(frame["Full Date"].dt.date):
+        names = pd.Series([
+            *g["Course Info (AM)"].dropna().apply(normalize_name).tolist(),
+            *g["Course Info (PM)"].dropna().apply(normalize_name).tolist()
+        ])
+        total += names.dropna().nunique()
+    return int(total)
+
+classes_left_program = classes_left_unique_names(upcoming)
+
+# Also provide Classes Left to Dec 31 for convenience
 end_of_year = now.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=0)
-classes_left_eoy = df[(df["Full Date"] >= now) & (df["Full Date"] <= end_of_year)].shape[0]
+classes_left_eoy = classes_left_unique_names(upcoming[upcoming["Full Date"] <= end_of_year])
 
-# 2) Class weekends left (for all remaining classes to program end)
-df["WeekPeriod"] = df["Full Date"].dt.to_period("W")
-weekends_left = df[df["Full Date"] >= now]["WeekPeriod"].nunique()
+# 2) Class Weekends Left (exclude onsite window)
+excluded = (upcoming["Full Date"] >= EXCLUDE_START) & (upcoming["Full Date"] <= EXCLUDE_END)
+upcoming_for_weekends = upcoming[~excluded].copy()
+upcoming_for_weekends["WeekPeriod"] = upcoming_for_weekends["Full Date"].dt.to_period("W")
+weekends_left = int(upcoming_for_weekends["WeekPeriod"].nunique())
 
-# 3) Courses left (group by base course name for remaining classes)
+# 3) Courses Left (group by base course name across all remaining sessions)
 base_am = df["Course Info (AM)"].apply(extract_base_course)
 base_pm = df["Course Info (PM)"].apply(extract_base_course)
 df["Base Course"] = base_am.combine_first(base_pm)
-courses_left = df[df["Full Date"] >= now]["Base Course"].dropna().nunique()
+courses_left = int(df[df["Full Date"] >= now]["Base Course"].dropna().nunique())
 
-# 4) Live countdown to last class end-of-day
+# 4) Live countdown to last class day (HH:MM:SS)
 def fmt_delta(delta: timedelta):
     if delta.total_seconds() < 0:
         return "🎉 Completed"
@@ -64,36 +97,30 @@ def fmt_delta(delta: timedelta):
     return f"{days}d {hours}h {minutes}m {seconds}s"
 
 st.subheader("📊 Countdown Summary")
-
 c1, c2 = st.columns(2)
-c1.metric("🎓 Classes Left (to Dec 31)", classes_left_eoy)
-c2.metric("📆 Class Weekends Left", weekends_left)
+c1.metric("🎓 Classes Left (unique names, to Program End)", classes_left_program)
+c2.metric("🎓 Classes Left (unique names, to Dec 31)", classes_left_eoy)
 
 c3, c4 = st.columns(2)
-c3.metric("📚 Courses Left", courses_left)
+c3.metric("📆 Class Weekends Left (excl. Oct 31–Nov 9)", weekends_left)
+c4.metric("⏳ Time Until LAST CLASS Day Ends", fmt_delta(last_class_end - now))
 
-# Live countdown
-count_placeholder = c4.empty()
+st.caption(f"Last class day (from 'Strategies for Sustainability 3' if present): {last_class_day.strftime('%A, %B %d, %Y')} — Countdown targets 23:59:59 {TZ}.")
 
-# Checkbox to enable/disable live ticking
+# Optional live countdown
 live = st.checkbox("⏱️ Live countdown (updates every second)", value=True)
-
-# Draw once first
-count_placeholder.metric("⏳ Time Until Last Class Day Ends", fmt_delta(last_class_end - now))
-
+placeholder = st.empty()
 if live:
     import time
-    # Update for up to 12 hours or until event passes (session-level)
-    for _ in range(60 * 60 * 12):
+    for _ in range(60*60):  # update up to 1 hour
         now = datetime.now(TZ)
-        remaining = last_class_end - now
-        count_placeholder.metric("⏳ Time Until Last Class Day Ends", fmt_delta(remaining))
-        if remaining.total_seconds() <= 0:
+        placeholder.metric("⏳ Time Until LAST CLASS Day Ends", fmt_delta(last_class_end - now))
+        if (last_class_end - now).total_seconds() <= 0:
             break
         time.sleep(1)
 
-with st.expander("📅 Upcoming Classes"):
-    upcoming = df[df["Full Date"] >= now][["Full Date", "Course Info (AM)", "Course Info (PM)"]].sort_values("Full Date")
-    st.dataframe(upcoming, use_container_width=True)
+with st.expander("📅 Upcoming Classes (Program End)"):
+    st.dataframe(upcoming[["Full Date", "Course Info (AM)", "Course Info (PM)"]].sort_values("Full Date"), use_container_width=True)
 
-st.caption("Times shown in America/Toronto time. 'Classes Left' counts sessions through Dec 31 of the current year.")
+with st.expander("📅 Weekends Counted (exclusions applied)"):
+    st.dataframe(upcoming_for_weekends[["Full Date", "Course Info (AM)", "Course Info (PM)", "WeekPeriod"]].sort_values("Full Date"), use_container_width=True)
