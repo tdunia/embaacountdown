@@ -98,14 +98,14 @@ def fmt_delta(delta: timedelta):
 
 st.subheader("📊 Countdown Summary")
 c1, c2 = st.columns(2)
-c1.metric("🎓 Classes Left (unique names, to Program End)", classes_left_program)
-c2.metric("🎓 Classes Left (unique names, to Dec 31)", classes_left_eoy)
+c1.metric("🎓 Classes Left to Program End", classes_left_program)
+c2.metric("🎓 Classes Left to Dec 31", classes_left_eoy)
 
 c3, c4 = st.columns(2)
-c3.metric("📆 Class Weekends Left (excl. Oct 31–Nov 9)", weekends_left)
+c3.metric("📆 Class Weekends Left", weekends_left)
 c4.metric("⏳ Time Until LAST CLASS Day Ends", fmt_delta(last_class_end - now))
 
-st.caption(f"Last class day (from 'Strategies for Sustainability 3' if present): {last_class_day.strftime('%A, %B %d, %Y')} — Countdown targets 23:59:59 {TZ}.")
+st.caption(f"Last class day: {last_class_day.strftime('%A, %B %d, %Y')} — Countdown targets 23:59:59 {TZ}.")
 
 # Optional live countdown
 live = st.checkbox("⏱️ Live countdown (updates every second)", value=True)
